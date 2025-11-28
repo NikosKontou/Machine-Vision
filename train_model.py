@@ -21,7 +21,6 @@ CSV_PATH = 'data/GroundTruth.csv'
 MODEL_DIR = 'models'
 IMG_SIZE = 224
 
-# Ensure directories exist
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 
@@ -66,22 +65,24 @@ def advanced_feature_extraction(image_path):
 
     # 3. Preprocessing
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # HEAVIER BLUR to reduce skin texture noise
     blur = cv2.GaussianBlur(gray, (9, 9), 0)
 
-    # 4. Adaptive Thresholding (Tuned)
-    # BlockSize = 99 (Must be odd, needs to be large to see the whole lesion context)
-    # C = 15 (High value = Stricter, filters out skin pores/texture)
+    # 4. Adaptive Thresholding
     mask = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                  cv2.THRESH_BINARY_INV, 99, 15)
 
-    # 5. Morphological Operations (Cleaning)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    # 5. Morphological Operations
+    # Step A: Opening (Erosion followed by Dilation) to remove small noise specks
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=2)
+
+    # Step B: Dilation (NEW STEP) to connect nearby components (fill gaps)
+    # We use a slightly larger kernel to bridge gaps
+    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    mask_connected = cv2.dilate(mask_clean, kernel_dilate, iterations=2)
 
     # 6. Connected Components (Keep Largest)
-    contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask_connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     area, perimeter, compactness = 0, 0, 0
 
