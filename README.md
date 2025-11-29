@@ -1,4 +1,4 @@
-#By Kolia Aimilia, Kontoudakis Nikos, Skiada Kiki, Lampropoulou Nancy
+# By Kolia Aimilia, Kontoudakis Nikos, Skiada Kiki, Lampropoulou Nancy
 The propejct aims to classify lessions.
 ## Project Structure
 
