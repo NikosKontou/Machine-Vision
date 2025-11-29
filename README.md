@@ -1,10 +1,7 @@
 # By Kolia Aimilia, Kontoudakis Nikos, Skiada Kiki, Lampropoulou Nancy
-The propejct aims to classify lessions.
-## Project Structure
+The project aims to classify lesions.
 
-The project is organized as follows:
 # Project Structure
-
 The project follows a modular structure to separate configuration, data processing, computer vision logic, and model training.
 
 ```text
