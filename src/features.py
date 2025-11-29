@@ -6,82 +6,69 @@ from . import config
 
 
 def preprocess_image(img):
-    """Standardizes image size and removes high-frequency noise."""
-    if img is None: return None, None, None
+    """
+    Standardizes, Grayscale, applies CLAHE (Smart Contrast), and Blur.
+    """
+    if img is None: return None, None, None, None
 
     img_resized = cv2.resize(img, (config.IMG_SIZE, config.IMG_SIZE))
-    img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-    img_blur = cv2.GaussianBlur(img_gray, config.BLUR_KERNEL, 0)
 
-    return img_resized, img_gray, img_blur
+    # 1. Grayscale
+    img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+
+    # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    # Instead of standard equalizeHist (which is too noisy), this enhances
+    # contrast while suppressing noise (pores/hair).
+    clahe = cv2.createCLAHE(clipLimit=config.CLAHE_CLIP, tileGridSize=config.CLAHE_GRID)
+    img_eq = clahe.apply(img_gray)
+
+    # 3. Blur (Applied to the EQUALIZED image)
+    img_blur = cv2.GaussianBlur(img_eq, config.BLUR_KERNEL, 0)
+
+    return img_resized, img_gray, img_eq, img_blur
 
 
 def extract_color_stats(img, mask=None):
-    """
-    Calculates Mean, Std Dev, and Skewness for R, G, B channels.
-    If mask is provided, only considers pixels inside the mask (The Lesion).
-    """
+    """Calculates Mean, Std, Skew for R, G, B."""
     stats = []
-    # Loop through Blue, Green, Red channels
     for i in range(3):
         channel = img[:, :, i]
-
         if mask is not None:
-            # Extract only the pixels where the mask is white (>0)
-            # This flattens the array automatically
             pixels = channel[mask > 0]
         else:
             pixels = channel.flatten()
 
-        # Safety check: If mask is empty, push zeros
         if len(pixels) == 0:
             stats.extend([0, 0, 0])
         else:
             stats.append(np.mean(pixels))
             stats.append(np.std(pixels))
             stats.append(skew(pixels))
-
     return stats
 
 
 def extract_histogram_features(img, mask=None):
-    """
-    Calculates the Color Histogram for the lesion area only.
-    Returns a normalized feature vector of the color distribution.
-    """
+    """Calculates Color Histogram for lesion area."""
     hist_features = []
-
-    # Loop through B, G, R channels
     for i in range(3):
-        # Calculate histogram:
-        # [img]: input image
-        # [i]: channel index (0=B, 1=G, 2=R)
-        # mask: only count pixels inside the lesion
-        # [config.HIST_BINS]: e.g., 8 bins (grouping colors)
-        # [0, 256]: range of pixel values
         hist = cv2.calcHist([img], [i], mask, [config.HIST_BINS], [0, 256])
-
-        # Normalize histogram (so image size doesn't matter, only distribution)
         cv2.normalize(hist, hist)
-
-        # Flatten and add to features
         hist_features.extend(hist.flatten())
-
     return hist_features
 
 
 def segment_lesion(img_blur):
-    """Pipeline: Adaptive Threshold -> Open (Clean) -> Dilate (Connect)."""
-    # 1. Adaptive Thresholding
-    mask_raw = cv2.adaptiveThreshold(
-        img_blur, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        config.ADAPTIVE_BLOCK_SIZE,
-        config.ADAPTIVE_C
-    )
+    """
+    Pipeline: Otsu Thresholding -> Open (Clean) -> Dilate (Connect).
+    Note: We switched from Adaptive to Otsu because CLAHE provides
+    enough global contrast for Otsu to work reliably.
+    """
+    # 1. Otsu's Thresholding (Global)
+    # Automatically finds the best split between dark lesion and light skin.
+    # THRESH_BINARY_INV means "Make the dark stuff white (selected)"
+    _, mask_raw = cv2.threshold(img_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # 2. Morphological Opening (Clean Noise)
+    # 2. Morphological Opening (Remove Noise)
     kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, config.MORPH_OPEN_KERNEL)
     mask_clean = cv2.morphologyEx(mask_raw, cv2.MORPH_OPEN, kernel_open, iterations=2)
 
@@ -93,28 +80,44 @@ def segment_lesion(img_blur):
 
 
 def isolate_largest_component(mask):
-    """Filters all blobs except the largest one (the lesion)."""
+    """Filters all blobs except the largest one."""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
     final_mask = np.zeros_like(mask)
     area, perimeter, compactness = 0, 0, 0
 
     if contours:
-        cnt = max(contours, key=cv2.contourArea)
+        # Sort contours by area, descending
+        sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        # Take the largest one
+        cnt = sorted_contours[0]
         area = cv2.contourArea(cnt)
 
-        if area > 50:
-            # Draw the largest contour filled with white (255) onto the final mask
+        # Filter: Ignore if it's practically the whole image (vignette border artifact)
+        # or if it's tiny noise
+        img_area = mask.shape[0] * mask.shape[1]
+
+        if 50 < area < (img_area * 0.95):
             cv2.drawContours(final_mask, [cnt], -1, 255, -1)
             perimeter = cv2.arcLength(cnt, True)
             if perimeter > 0:
                 compactness = (4 * np.pi * area) / (perimeter ** 2)
+        elif len(sorted_contours) > 1:
+            # Fallback: If largest was essentially the whole image border, try the 2nd largest
+            cnt2 = sorted_contours[1]
+            area2 = cv2.contourArea(cnt2)
+            if area2 > 50:
+                cv2.drawContours(final_mask, [cnt2], -1, 255, -1)
+                area = area2
+                perimeter = cv2.arcLength(cnt2, True)
+                if perimeter > 0:
+                    compactness = (4 * np.pi * area) / (perimeter ** 2)
 
     return final_mask, area, perimeter, compactness
 
 
 def compute_texture_sobel(img_gray):
-    """Calculates texture score using Sobel gradients."""
+    """Calculates texture score (Sobel) on RAW gray image."""
     sobelx = cv2.Sobel(img_gray, cv2.CV_64F, 1, 0, ksize=3)
     sobely = cv2.Sobel(img_gray, cv2.CV_64F, 0, 1, ksize=3)
 
@@ -126,11 +129,7 @@ def compute_texture_sobel(img_gray):
 
 
 def extract_all_features_pipeline(image_path_or_array):
-    """
-    Master Orchestrator.
-    Can handle input as a file path (str) or a numpy array (image).
-    """
-    # 1. Load
+    """Master Orchestrator."""
     if isinstance(image_path_or_array, str):
         img = cv2.imread(image_path_or_array)
     else:
@@ -138,28 +137,23 @@ def extract_all_features_pipeline(image_path_or_array):
 
     if img is None: return None
 
-    # 2. Preprocess
-    img_resized, img_gray, img_blur = preprocess_image(img)
+    # 1. Preprocess (CLAHE -> Blur)
+    img_resized, img_gray, img_eq, img_blur = preprocess_image(img)
 
     features = []
 
-    # 3. Segmentation Pipeline (Get the Mask)
+    # 2. Segmentation (Otsu)
     _, _, mask_connected = segment_lesion(img_blur)
     mask_final, area, perimeter, compactness = isolate_largest_component(mask_connected)
 
-    # 4. Color Analysis (Masked)
-    # Apply the mask so we only look at the lesion pixels
-    color_stats = extract_color_stats(img_resized, mask=mask_final)
-    features.extend(color_stats)
+    # 3. Color Analysis
+    features.extend(extract_color_stats(img_resized, mask=mask_final))
+    features.extend(extract_histogram_features(img_resized, mask=mask_final))
 
-    # 5. Histogram Analysis (Masked) - NEW
-    hist_stats = extract_histogram_features(img_resized, mask=mask_final)
-    features.extend(hist_stats)
-
-    # 6. Shape Analysis
+    # 4. Shape
     features.extend([area, perimeter, compactness])
 
-    # 7. Texture Analysis
+    # 5. Texture
     texture_score, _ = compute_texture_sobel(img_gray)
     features.append(texture_score)
 

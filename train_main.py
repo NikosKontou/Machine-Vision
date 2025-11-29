@@ -4,7 +4,7 @@ from src import data, features, model
 
 def main():
     # 1. Load Data
-    df, classes = data.load_metadata(limit=2000)  # Set limit=None for full run
+    df, classes = data.load_metadata(limit=None)  # Set limit=None for full run
 
     # 2. Feature Extraction Loop
     print(f"Extracting features for {len(df)} images...")
