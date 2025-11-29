@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import os
+import matplotlib.pyplot as plt  # NEW IMPORT
 from src import features, config
 
 # --- Setup ---
@@ -75,6 +76,9 @@ if uploaded_file is not None:
         mask_final, _, _, _ = features.isolate_largest_component(mask_connected)
         _, texture_vis = features.compute_texture_sobel(img_gray)
 
+        # Bitwise AND keeps only pixels where mask is white
+        img_lesion_only = cv2.bitwise_and(img_resized, img_resized, mask=mask_final)
+
         # Row 1: Preprocessing
         c1, c2, c3 = st.columns(3)
         c1.image(img_resized, channels="BGR", caption="1. Resize")
@@ -84,15 +88,38 @@ if uploaded_file is not None:
 
         # Row 2: Segmentation
         c4, c5 = st.columns(2)
-        c4.image(mask_raw, caption="4. Adaptive Threshold (Raw)")
-        c5.image(mask_clean, caption="5. Morph Opening (Clean Noise)")
+        c4.image(mask_raw, caption="4. Adaptive Threshold")
+        c5.image(mask_clean, caption="5. Morph Opening (Clean)")
         st.divider()
 
-        # Row 3: Connection & Selection
+        # Row 3: Final Mask & Color Extraction Source
         c6, c7 = st.columns(2)
-        c6.image(mask_connected, caption="6. Morph Dilation (Connect)")
-        c7.image(mask_final, caption="7. Largest Component Only")
+        c6.image(mask_final, caption="6. Final Mask (Largest Component)")
+        c7.image(img_lesion_only, channels="BGR", caption="7. Color Extraction Source (Masked)")
         st.divider()
 
         # Row 4: Texture
         st.image(texture_vis, caption="8. Sobel Texture Magnitude")
+        st.divider()
+
+        # Row 5: Histogram (NEW)
+        st.markdown("### 9. Lesion Color Histogram")
+        st.write("Distribution of Red, Green, and Blue intensities **inside the lesion only**.")
+
+        # Create Plot
+        fig, ax = plt.subplots(figsize=(6, 2))
+        colors = ('b', 'g', 'r')
+
+        for i, color in enumerate(colors):
+            # Calculate 256-bin histogram for display (smoother than the 8-bin model feature)
+            # mask=mask_final ensures we ignore the black background
+            hist = cv2.calcHist([img_resized], [i], mask_final, [256], [0, 256])
+            ax.plot(hist, color=color)
+            ax.set_xlim([0, 256])
+
+        ax.set_title("Color Frequency")
+        ax.set_xlabel("Pixel Intensity (0=Dark, 255=Bright)")
+        ax.set_ylabel("Count")
+
+        # Display Plot
+        st.pyplot(fig)

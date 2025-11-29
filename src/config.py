@@ -1,3 +1,4 @@
+# src/config.py
 import os
 
 # Paths
@@ -11,13 +12,16 @@ IMG_SIZE = 224
 CLASSES = ['MEL', 'NV', 'BCC', 'AKIEC', 'BKL', 'DF', 'VASC']
 
 # Hyperparameters
-ADAPTIVE_BLOCK_SIZE = 99
-ADAPTIVE_C = 15
+ADAPTIVE_BLOCK_SIZE = 81
+ADAPTIVE_C = 3
 BLUR_KERNEL = (9, 9)
 MORPH_OPEN_KERNEL = (3, 3)
 MORPH_DILATE_KERNEL = (5, 5)
 
-# Legend for UI
+# NEW: Histogram Configuration
+HIST_BINS = 8  # Number of bins per color channel (R, G, B)
+
+# Legend for UI (Keep existing)
 LEGEND_DATA = {
     "Abbreviation": ["MEL", "NV", "BCC", "AKIEC", "BKL", "DF", "VASC"],
     "Full Diagnosis": [
