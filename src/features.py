@@ -1,28 +1,46 @@
-# src/features.py
 import cv2
 import numpy as np
 from scipy.stats import skew
 from . import config
 
 
+def resize_with_padding(img, target_size=224):
+    """
+    Resizes image while preserving aspect ratio.
+    Best practice to avoid distortion.
+    """
+    h, w = img.shape[:2]
+    scale = target_size / max(h, w)
+
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    # Resize with proper interpolation
+    resized = cv2.resize(
+        img, (new_w, new_h),
+        interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+    )
+
+    return resized
+
+
 def preprocess_image(img):
     """
-    Standardizes, Grayscale, applies CLAHE (Smart Contrast), and Blur.
+    Standardizes (with padding), Grayscale, applies CLAHE (Smart Contrast), and Blur.
     """
     if img is None: return None, None, None, None
 
-    img_resized = cv2.resize(img, (config.IMG_SIZE, config.IMG_SIZE))
+    # 1. Resize with Padding (Preserves Aspect Ratio)
+    img_resized = resize_with_padding(img, target_size=config.IMG_SIZE)
 
-    # 1. Grayscale
+    # 2. Grayscale
     img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
 
-    # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    # Instead of standard equalizeHist (which is too noisy), this enhances
-    # contrast while suppressing noise (pores/hair).
+    # 3. CLAHE (Contrast Limited Adaptive Histogram Equalization)
     clahe = cv2.createCLAHE(clipLimit=config.CLAHE_CLIP, tileGridSize=config.CLAHE_GRID)
     img_eq = clahe.apply(img_gray)
 
-    # 3. Blur (Applied to the EQUALIZED image)
+    # 4. Blur (Applied to the EQUALIZED image)
     img_blur = cv2.GaussianBlur(img_eq, config.BLUR_KERNEL, 0)
 
     return img_resized, img_gray, img_eq, img_blur
@@ -60,12 +78,8 @@ def extract_histogram_features(img, mask=None):
 def segment_lesion(img_blur):
     """
     Pipeline: Otsu Thresholding -> Open (Clean) -> Dilate (Connect).
-    Note: We switched from Adaptive to Otsu because CLAHE provides
-    enough global contrast for Otsu to work reliably.
     """
     # 1. Otsu's Thresholding (Global)
-    # Automatically finds the best split between dark lesion and light skin.
-    # THRESH_BINARY_INV means "Make the dark stuff white (selected)"
     _, mask_raw = cv2.threshold(img_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
     # 2. Morphological Opening (Remove Noise)
@@ -93,8 +107,7 @@ def isolate_largest_component(mask):
         cnt = sorted_contours[0]
         area = cv2.contourArea(cnt)
 
-        # Filter: Ignore if it's practically the whole image (vignette border artifact)
-        # or if it's tiny noise
+        # Vignette/Border guard
         img_area = mask.shape[0] * mask.shape[1]
 
         if 50 < area < (img_area * 0.95):
@@ -103,7 +116,7 @@ def isolate_largest_component(mask):
             if perimeter > 0:
                 compactness = (4 * np.pi * area) / (perimeter ** 2)
         elif len(sorted_contours) > 1:
-            # Fallback: If largest was essentially the whole image border, try the 2nd largest
+            # Fallback to 2nd largest
             cnt2 = sorted_contours[1]
             area2 = cv2.contourArea(cnt2)
             if area2 > 50:
@@ -116,14 +129,38 @@ def isolate_largest_component(mask):
     return final_mask, area, perimeter, compactness
 
 
-def compute_texture_sobel(img_gray):
-    """Calculates texture score (Sobel) on RAW gray image."""
+def compute_texture_sobel(img_gray, mask=None):
+    """
+    Calculates texture score (Sobel) on RAW gray image.
+    Uses mask to restrict the MEAN calculation to the lesion area only.
+    """
+    # 1. Calculate Gradients on the FULL image first.
+    # We do this on the full image so that the kernel (3x3) works correctly 
+    # at the boundaries of the lesion. If we masked the image to black first,
+    # the Sobel would detect massive artificial edges at the mask border.
     sobelx = cv2.Sobel(img_gray, cv2.CV_64F, 1, 0, ksize=3)
     sobely = cv2.Sobel(img_gray, cv2.CV_64F, 0, 1, ksize=3)
 
     magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
-    texture_score = np.mean(magnitude)
+
+    # 2. Use Mask for Calculation
+    if mask is not None:
+        # Only select the gradient magnitude pixels that fall inside the lesion mask
+        lesion_gradients = magnitude[mask > 0]
+
+        if len(lesion_gradients) > 0:
+            texture_score = np.mean(lesion_gradients)
+        else:
+            texture_score = 0
+    else:
+        texture_score = np.mean(magnitude)
+
+    # Normalize for visualization purposes (0-255)
     magnitude_vis = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+    # Apply mask to visualization if provided
+    if mask is not None:
+        magnitude_vis = cv2.bitwise_and(magnitude_vis, magnitude_vis, mask=mask)
 
     return texture_score, magnitude_vis
 
@@ -137,12 +174,12 @@ def extract_all_features_pipeline(image_path_or_array):
 
     if img is None: return None
 
-    # 1. Preprocess (CLAHE -> Blur)
+    # 1. Preprocess
     img_resized, img_gray, img_eq, img_blur = preprocess_image(img)
 
     features = []
 
-    # 2. Segmentation (Otsu)
+    # 2. Segmentation
     _, _, mask_connected = segment_lesion(img_blur)
     mask_final, area, perimeter, compactness = isolate_largest_component(mask_connected)
 
@@ -153,8 +190,8 @@ def extract_all_features_pipeline(image_path_or_array):
     # 4. Shape
     features.extend([area, perimeter, compactness])
 
-    # 5. Texture
-    texture_score, _ = compute_texture_sobel(img_gray)
+    # 5. Texture (Passed mask_final here)
+    texture_score, _ = compute_texture_sobel(img_gray, mask=mask_final)
     features.append(texture_score)
 
     return np.array(features)
