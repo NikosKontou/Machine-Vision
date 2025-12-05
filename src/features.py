@@ -4,24 +4,33 @@ from scipy.stats import skew
 from . import config
 
 
-def resize_with_padding(img, target_size=224):
+def center_crop_and_resize(img, target_size=224):
     """
-    Resizes image while preserving aspect ratio.
-    Best practice to avoid distortion.
+    Take the largest possible center square from the image (no distortion)
+    Resize that square to (target_size x target_size)
     """
+
     h, w = img.shape[:2]
-    scale = target_size / max(h, w)
 
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    # Determine the size of the largest possible center square
+    min_side = min(h, w)
 
-    # Resize with proper interpolation
-    resized = cv2.resize(
-        img, (new_w, new_h),
-        interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+    # Starting points for center crop
+    start_x = (w - min_side) // 2
+    start_y = (h - min_side) // 2
+
+    # Perform center crop
+    img_cropped = img[start_y:start_y + min_side,
+                      start_x:start_x + min_side]
+
+    # Resize the center crop to target_size x target_size
+    img_resized = cv2.resize(
+        img_cropped,
+        (target_size, target_size),
+        interpolation=cv2.INTER_AREA if min_side > target_size else cv2.INTER_CUBIC
     )
 
-    return resized
+    return img_resized
 
 
 def preprocess_image(img):
@@ -30,8 +39,8 @@ def preprocess_image(img):
     """
     if img is None: return None, None, None, None
 
-    # 1. Resize with Padding (Preserves Aspect Ratio)
-    img_resized = resize_with_padding(img, target_size=config.IMG_SIZE)
+    # 1. Resize with center crop
+    img_resized = center_crop_and_resize(img, config.IMG_SIZE)
 
     # 2. Grayscale
     img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
