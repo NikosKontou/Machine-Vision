@@ -8,12 +8,16 @@ from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
 from . import config
 
 
 def train_and_evaluate(X, y, classes):
     """Trains models, compares them, generates plots, and saves the best one."""
 
+    # 1. Define Models with Class Weights
+    # 'class_weight="balanced"' calculates weights inversely proportional to class frequencies.
+    # If we already upsampled in data.py, these will be roughly 1.0, but it's safe to keep.
     techniques = {
         "RF": RandomForestClassifier(n_estimators=100, class_weight='balanced', random_state=42),
         "SVM": SVC(probability=True, class_weight='balanced', random_state=42)
@@ -27,14 +31,23 @@ def train_and_evaluate(X, y, classes):
     os.makedirs(config.MODEL_DIR, exist_ok=True)
     fig, axes = plt.subplots(1, len(techniques), figsize=(12, 5))
 
-    # Split Data
+    # 2. Split Data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
-    # Scaling is mandatory for SVM, good for RF
+    # 3. Calculate and Print Weights (For verification)
+    print("\n--- Class Weight Configuration ---")
+    weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
+    weight_dict = dict(zip(classes, weights))
+    for cls, weight in weight_dict.items():
+        print(f"Class '{cls}': Weight {weight:.2f}")
+    print("----------------------------------\n")
+
+    # 4. Scaling
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
     X_test_s = scaler.transform(X_test)
 
+    # 5. Training Loop
     for i, (name, model) in enumerate(techniques.items()):
         print(f"Training {name}...")
         model.fit(X_train_s, y_train)
@@ -53,7 +66,7 @@ def train_and_evaluate(X, y, classes):
             best_score = acc
             best_model = model
             best_name = name
-            best_scaler = scaler  # Save the scaler fitted on training data
+            best_scaler = scaler
 
     plt.tight_layout()
     plt.savefig(os.path.join(config.MODEL_DIR, 'comparison_results.png'))
