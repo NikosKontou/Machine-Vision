@@ -4,52 +4,74 @@ from scipy.stats import skew
 from . import config
 
 
-def center_crop_and_resize(img, target_size=224):
+def get_feature_names():
     """
-    Take the largest possible center square from the image (no distortion)
-    Resize that square to (target_size x target_size)
+    Returns the list of feature names in the exact order they are extracted
+    by the pipeline. Used for Explainable AI plots.
     """
+    names = []
 
+    # 1. Color Stats (Mean, Std, Skew for B, G, R)
+    # OpenCV loads images as BGR
+    for c in ['Blue', 'Green', 'Red']:
+        names.extend([f'{c}_Mean', f'{c}_Std', f'{c}_Skew'])
+
+    # 2. Histogram (Bins for B, G, R)
+    for c in ['Blue', 'Green', 'Red']:
+        for i in range(config.HIST_BINS):
+            names.append(f'{c}_Hist_Bin_{i}')
+
+    # 3. Shape
+    names.extend(['Area', 'Perimeter', 'Compactness'])
+
+    # 4. Texture
+    names.append('Texture_EdgeDensity')
+
+    return names
+
+
+def resize_with_padding(img, target_size=config.IMG_SIZE):
+    """
+    Resizes image while preserving aspect ratio, then pads to square.
+    Best practice for HAM10000 (600x450) to avoid geometric distortion.
+    """
     h, w = img.shape[:2]
+    scale = target_size / max(h, w)
 
-    # Determine the size of the largest possible center square
-    min_side = min(h, w)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
 
-    # Starting points for center crop
-    start_x = (w - min_side) // 2
-    start_y = (h - min_side) // 2
+    interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+    resized = cv2.resize(img, (new_w, new_h), interpolation=interpolation)
 
-    # Perform center crop
-    img_cropped = img[start_y:start_y + min_side,
-                      start_x:start_x + min_side]
+    pad_w = target_size - new_w
+    pad_h = target_size - new_h
 
-    # Resize the center crop to target_size x target_size
-    img_resized = cv2.resize(
-        img_cropped,
-        (target_size, target_size),
-        interpolation=cv2.INTER_AREA if min_side > target_size else cv2.INTER_CUBIC
+    top = pad_h // 2
+    bottom = pad_h - top
+    left = pad_w // 2
+    right = pad_w - left
+
+    padded = cv2.copyMakeBorder(
+        resized,
+        top, bottom, left, right,
+        cv2.BORDER_CONSTANT,
+        value=(255, 255, 255)
     )
 
-    return img_resized
+    return padded
 
 
 def preprocess_image(img):
-    """
-    Standardizes (with padding), Grayscale, applies CLAHE (Smart Contrast), and Blur.
-    """
+    """Standardizes, Grayscale, CLAHE, and Blur."""
     if img is None: return None, None, None, None
 
-    # 1. Resize with center crop
-    img_resized = center_crop_and_resize(img, config.IMG_SIZE)
-
-    # 2. Grayscale
+    img_resized = resize_with_padding(img, target_size=config.IMG_SIZE)
     img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
 
-    # 3. CLAHE (Contrast Limited Adaptive Histogram Equalization)
     clahe = cv2.createCLAHE(clipLimit=config.CLAHE_CLIP, tileGridSize=config.CLAHE_GRID)
     img_eq = clahe.apply(img_gray)
 
-    # 4. Blur (Applied to the EQUALIZED image)
     img_blur = cv2.GaussianBlur(img_eq, config.BLUR_KERNEL, 0)
 
     return img_resized, img_gray, img_eq, img_blur
@@ -85,17 +107,12 @@ def extract_histogram_features(img, mask=None):
 
 
 def segment_lesion(img_blur):
-    """
-    Pipeline: Otsu Thresholding -> Open (Clean) -> Dilate (Connect).
-    """
-    # 1. Otsu's Thresholding (Global)
+    """Pipeline: Otsu Thresholding -> Open (Clean) -> Dilate (Connect)."""
     _, mask_raw = cv2.threshold(img_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # 2. Morphological Opening (Remove Noise)
     kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, config.MORPH_OPEN_KERNEL)
     mask_clean = cv2.morphologyEx(mask_raw, cv2.MORPH_OPEN, kernel_open, iterations=2)
 
-    # 3. Dilation (Connect Components)
     kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, config.MORPH_DILATE_KERNEL)
     mask_connected = cv2.dilate(mask_clean, kernel_dilate, iterations=2)
 
@@ -109,14 +126,10 @@ def isolate_largest_component(mask):
     area, perimeter, compactness = 0, 0, 0
 
     if contours:
-        # Sort contours by area, descending
         sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
-        # Take the largest one
         cnt = sorted_contours[0]
         area = cv2.contourArea(cnt)
 
-        # Vignette/Border guard
         img_area = mask.shape[0] * mask.shape[1]
 
         if 50 < area < (img_area * 0.95):
@@ -125,7 +138,6 @@ def isolate_largest_component(mask):
             if perimeter > 0:
                 compactness = (4 * np.pi * area) / (perimeter ** 2)
         elif len(sorted_contours) > 1:
-            # Fallback to 2nd largest
             cnt2 = sorted_contours[1]
             area2 = cv2.contourArea(cnt2)
             if area2 > 50:
@@ -137,53 +149,12 @@ def isolate_largest_component(mask):
 
     return final_mask, area, perimeter, compactness
 
-def compute_texture_sobel(img_gray, mask=None):
-    """
-    Calculates texture score (Sobel) on RAW gray image.
-    Uses mask to restrict the MEAN calculation to the lesion area only.
-    """
-    # 1. Calculate Gradients on the FULL image first.
-    # We do this on the full image so that the kernel (3x3) works correctly
-    # at the boundaries of the lesion. If we masked the image to black first,
-    # the Sobel would detect massive artificial edges at the mask border.
-    sobelx = cv2.Sobel(img_gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(img_gray, cv2.CV_64F, 0, 1, ksize=3)
-
-    magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
-
-    # 2. Use Mask for Calculation
-    if mask is not None:
-        # Only select the gradient magnitude pixels that fall inside the lesion mask
-        lesion_gradients = magnitude[mask > 0]
-
-        if len(lesion_gradients) > 0:
-            texture_score = np.mean(lesion_gradients)
-        else:
-            texture_score = 0
-    else:
-        texture_score = np.mean(magnitude)
-
-    # Normalize for visualization purposes (0-255)
-    magnitude_vis = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-
-    # Apply mask to visualization if provided
-    if mask is not None:
-        magnitude_vis = cv2.bitwise_and(magnitude_vis, magnitude_vis, mask=mask)
-
-    return texture_score, magnitude_vis
 
 def compute_texture_canny(img_gray, mask=None):
-    """
-    Calculates texture score using Canny Edge Detection.
-    Score = Density of edges inside the lesion (Mean pixel intensity of edge map).
-    """
-    # Canny parameters: Threshold1 (hysteresis min), Threshold2 (hysteresis max)
-    # 100, 200 are standard starting points for 8-bit images
+    """Calculates texture score using Canny Edge Detection."""
     edges = cv2.Canny(img_gray, 100, 200)
 
-    # Calculate Score
     if mask is not None:
-        # Select edge pixels inside the lesion mask
         lesion_edges = edges[mask > 0]
         if len(lesion_edges) > 0:
             texture_score = np.mean(lesion_edges)
@@ -192,7 +163,6 @@ def compute_texture_canny(img_gray, mask=None):
     else:
         texture_score = np.mean(edges)
 
-    # Visualization
     edges_vis = edges.copy()
     if mask is not None:
         edges_vis = cv2.bitwise_and(edges_vis, edges_vis, mask=mask)
@@ -225,8 +195,7 @@ def extract_all_features_pipeline(image_path_or_array):
     # 4. Shape
     features.extend([area, perimeter, compactness])
 
-    # 5. Texture (Passed mask_final here)
-    # slightly better performance with canny 0.7254 vs 0.7329
+    # 5. Texture
     texture_score, _ = compute_texture_canny(img_gray, mask=mask_final)
     features.append(texture_score)
 
