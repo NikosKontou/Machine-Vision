@@ -6,7 +6,7 @@ def main():
     # 1. Load Data (Enable Balancing)
     # limit=None for full dataset, or e.g., 2000 for testing
     # balance=True activates the new upsampling logic
-    df, classes = data.load_metadata(limit=2000, balance=True)
+    df, classes = data.load_metadata(limit=None, balance=True)
 
     # 2. Feature Extraction Loop
     print(f"Extracting features for {len(df)} images...")

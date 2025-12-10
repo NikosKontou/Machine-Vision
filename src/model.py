@@ -54,7 +54,7 @@ def train_and_evaluate(X, y, classes):
         preds = model.predict(X_test_s)
         acc = accuracy_score(y_test, preds)
 
-        print(f"--> {name} Accuracy: {acc:.4f}")
+        print(f"--> {name} Test accuracy: {acc:.4f}")
 
         # Plot
         cm = confusion_matrix(y_test, preds)
