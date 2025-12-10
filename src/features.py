@@ -29,44 +29,40 @@ def get_feature_names():
 
     return names
 
+def center_crop_and_resize(img, target_size=224):
+    """
+    Take the largest possible center square from the image (no distortion)
+    Resize that square to (target_size x target_size)
+    """
 
-def resize_with_padding(img, target_size=config.IMG_SIZE):
-    """
-    Resizes image while preserving aspect ratio, then pads to square.
-    Best practice for HAM10000 (600x450) to avoid geometric distortion.
-    """
     h, w = img.shape[:2]
-    scale = target_size / max(h, w)
 
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    # Determine the size of the largest possible center square
+    min_side = min(h, w)
 
-    interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
-    resized = cv2.resize(img, (new_w, new_h), interpolation=interpolation)
+    # Starting points for center crop
+    start_x = (w - min_side) // 2
+    start_y = (h - min_side) // 2
 
-    pad_w = target_size - new_w
-    pad_h = target_size - new_h
+    # Perform center crop
+    img_cropped = img[start_y:start_y + min_side,
+                      start_x:start_x + min_side]
 
-    top = pad_h // 2
-    bottom = pad_h - top
-    left = pad_w // 2
-    right = pad_w - left
-
-    padded = cv2.copyMakeBorder(
-        resized,
-        top, bottom, left, right,
-        cv2.BORDER_CONSTANT,
-        value=(255, 255, 255)
+    # Resize the center crop to target_size x target_size
+    img_resized = cv2.resize(
+        img_cropped,
+        (target_size, target_size),
+        interpolation=cv2.INTER_AREA if min_side > target_size else cv2.INTER_CUBIC
     )
 
-    return padded
+    return img_resized
 
 
 def preprocess_image(img):
     """Standardizes, Grayscale, CLAHE, and Blur."""
     if img is None: return None, None, None, None
 
-    img_resized = resize_with_padding(img, target_size=config.IMG_SIZE)
+    img_resized = center_crop_and_resize(img, target_size=config.IMG_SIZE)
     img_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
 
     clahe = cv2.createCLAHE(clipLimit=config.CLAHE_CLIP, tileGridSize=config.CLAHE_GRID)
