@@ -48,13 +48,13 @@ def train_and_evaluate(X, y, classes):
 
         print(f"--> {name} Accuracy: {acc:.4f}")
 
-        # --- NEW: PLOTTING METRICS ---
+        # --- PLOTTING METRICS ---
         print(f"Generating ROC and Confusion Matrix for {name}...")
         plots.plot_confusion_matrix(y_test, preds, classes, name)
         plots.plot_multiclass_roc(model, X_test_s, y_test, classes, name)
         plots.save_classification_report(y_test, preds, classes, name)
 
-        # --- NEW: EXPLAINABLE AI (RF Only) ---
+        # --- EXPLAINABLE AI (RF Only) ---
         if name == "RF":
             print("Generating Feature Importance Plot (XAI)...")
             feature_names = features.get_feature_names()
