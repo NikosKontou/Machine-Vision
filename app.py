@@ -93,9 +93,9 @@ if uploaded_file is not None:
     # --- LIME EXPLANATION (Local XAI) ---
     st.divider()
     st.subheader("Explainable AI (LIME)")
-    st.write("#### Why was this specific image classified as " + pred_label + "?")
+    st.write(f"#### Why was this specific image classified as **{pred_label}**?")
     st.write(
-        "The chart below shows which features contributed most to the model's decision for this specific image. Green bars support the prediction, red bars contradict it.")
+        "The charts below show which features supported (Green) or contradicted (Red) the decision for **EACH** possible class.")
 
     try:
         # 1. Load the training sample (needed to initialize LIME)
@@ -104,7 +104,7 @@ if uploaded_file is not None:
             X_train_sample = np.load(train_sample_path)
             feature_names = features.get_feature_names()
 
-            # Check for feature mismatch (e.g. if config changed but model wasn't retrained)
+            # Check for feature mismatch
             if X_train_sample.shape[1] != len(feature_names):
                 st.warning(
                     f"Feature count mismatch (Model: {X_train_sample.shape[1]}, Code: {len(feature_names)}). Falling back to generic names.")
@@ -119,19 +119,26 @@ if uploaded_file is not None:
                 verbose=False
             )
 
-            # 3. Explain this specific instance
-            # We show the Top 10 features contributing to this specific decision
-            # Fix: Use labels=[int(pred_idx)] instead of top_labels=1 to avoid numpy type KeyErrors
+            # 3. Explain this specific instance for ALL classes
+            # We pass labels=range(len(classes)) to calculate explanations for every class index
             exp = explainer.explain_instance(
                 data_row=feat_scaled[0],
                 predict_fn=model.predict_proba,
                 num_features=10,
-                labels=[int(pred_idx)]
+                labels=range(len(classes))
             )
 
-            # 4. Plot
-            fig = exp.as_pyplot_figure(label=int(pred_idx))
-            st.pyplot(fig)
+            # 4. Plot using Tabs
+            # Create a tab for each class so the user can switch between them
+            tabs = st.tabs(list(classes))
+
+            for i, class_name in enumerate(classes):
+                with tabs[i]:
+                    st.write(f"**Evidence For/Against: {class_name}**")
+                    # LIME uses the index (i) to retrieve the specific explanation
+                    fig = exp.as_pyplot_figure(label=i)
+                    st.pyplot(fig)
+
         else:
             st.warning("LIME initialization data (X_train_sample.npy) not found. Re-run training.")
 
