@@ -5,16 +5,18 @@ import pandas as pd
 import joblib
 import os
 import matplotlib.pyplot as plt
+import lime
+import lime.lime_tabular
 from src import features, config
 
 st.set_page_config(page_title="DermAI Classification", layout="centered")
 
-# 2. we need  custom styling to widen the center container
+# Custom styling to widen the center container
 st.markdown(
     """
     <style>
     .block-container {
-        max-width: 1000px; /* Adjust this value to control width (Default is ~700px) */
+        max-width: 1000px;
         padding-top: 2rem;
         padding-bottom: 2rem;
     }
@@ -54,8 +56,12 @@ if uploaded_file is not None:
 
     with st.spinner('Extracting Handcrafted Features...'):
         feat_vector = features.extract_all_features_pipeline(image)
-        feat_vector = feat_vector.reshape(1, -1)
-        feat_scaled = scaler.transform(feat_vector)
+
+        # Reshape for model input
+        feat_vector_reshaped = feat_vector.reshape(1, -1)
+        feat_scaled = scaler.transform(feat_vector_reshaped)
+
+        # Predict
         probs = model.predict_proba(feat_scaled)
         pred_idx = np.argmax(probs)
         pred_label = classes[pred_idx]
@@ -64,42 +70,79 @@ if uploaded_file is not None:
         st.subheader(f"Prediction: **{pred_label}**")
         st.metric("Confidence", f"{probs[0][pred_idx] * 100:.2f}%")
 
+    # --- Charts ---
     st.subheader("Class Probabilities")
     chart_data = pd.DataFrame({"Class": classes, "Probability": probs[0] * 100})
     st.bar_chart(chart_data.set_index("Class"))
 
     with st.expander("Abbreviation information"):
-        # Load data
         df_legend = pd.DataFrame(config.LEGEND_DATA)
         st.dataframe(
             df_legend,
             column_config={
                 "More Info": st.column_config.LinkColumn(
-                    "More",  # Column header name
+                    "More",
                     help="Click to visit Wikipedia page",
-                    display_text="🔍"  # Text to show instead of the full URL
+                    display_text="🔍"
                 )
             },
             hide_index=True,
-            use_container_width=True  # Stretches table to fit width
+            use_container_width=True
         )
 
-    # --- Explainability ---
+    # --- LIME EXPLANATION (Local XAI) ---
+    st.divider()
+    st.subheader("Explainable AI (LIME)")
+    st.write("#### Why was this specific image classified as " + pred_label + "?")
+    st.write(
+        "The chart below shows which features contributed most to the model's decision for this specific image. Green bars support the prediction, red bars contradict it.")
+
+    try:
+        # 1. Load the training sample (needed to initialize LIME)
+        train_sample_path = os.path.join(config.MODEL_DIR, 'X_train_sample.npy')
+        if os.path.exists(train_sample_path):
+            X_train_sample = np.load(train_sample_path)
+            feature_names = features.get_feature_names()
+
+            # 2. Initialize Explainer
+            explainer = lime.lime_tabular.LimeTabularExplainer(
+                training_data=X_train_sample,
+                feature_names=feature_names,
+                class_names=classes,
+                mode='classification',
+                verbose=False
+            )
+
+            # 3. Explain this specific instance
+            # We show the Top 10 features contributing to this specific decision
+            exp = explainer.explain_instance(
+                data_row=feat_scaled[0],
+                predict_fn=model.predict_proba,
+                num_features=10,
+                top_labels=1
+            )
+
+            # 4. Plot
+            fig = exp.as_pyplot_figure()
+            st.pyplot(fig)
+        else:
+            st.warning("LIME initialization data (X_train_sample.npy) not found. Re-run training.")
+
+    except Exception as e:
+        st.error(f"Could not generate explanation: {e}")
+
+    # --- Pipeline Visualization ---
     st.divider()
     with st.expander("See Internal Logic (Computer Vision Pipeline Steps)", expanded=True):
         st.info("Visualizing the exact steps performed by `src.features.py`")
 
-        # Unpack the 4 preprocessing images
         img_resized, img_gray, img_eq, img_blur = features.preprocess_image(image)
         mask_raw, mask_clean, mask_connected = features.segment_lesion(img_blur)
         mask_final, _, _, _ = features.isolate_largest_component(mask_connected)
-
-        # Pass mask=mask_final so the visualization is blacked out around the lesion
         _, texture_vis = features.compute_texture_canny(img_gray, mask=mask_final)
-
         img_lesion_only = cv2.bitwise_and(img_resized, img_resized, mask=mask_final)
 
-        # Row 1: Preprocessing (4 Steps)
+        # Row 1: Preprocessing
         st.markdown("### Phase 1: Preprocessing")
         c1, c2, c3, c4 = st.columns(4)
         c1.image(img_resized, channels="BGR", caption="1. Resize")
@@ -111,23 +154,21 @@ if uploaded_file is not None:
         # Row 2: Segmentation
         st.markdown("### Phase 2: Segmentation")
         c5, c6 = st.columns(2)
-        c5.image(mask_raw, caption="5. Otsu Threshold (From Blur)")
-        c6.image(mask_clean, caption="6. Morph Opening (Clean)")
+        c5.image(mask_raw, caption="5. Otsu Threshold")
+        c6.image(mask_clean, caption="6. Morph Opening")
         st.divider()
 
         # Row 3: Connection & Selection
         c7, c8 = st.columns(2)
-        c7.image(mask_connected, caption="7. Morph Dilation (Connect)")
+        c7.image(mask_connected, caption="7. Morph Dilation")
         c8.image(mask_final, caption="8. Final Mask")
         st.divider()
 
         # Row 4: Analysis
         st.markdown("### Phase 3: Analysis")
         c9, c10 = st.columns(2)
-        c9.image(img_lesion_only, channels="BGR", caption="9. Masked Color Source")
-
-        # This will now display the masked Sobel image
-        c10.image(texture_vis, caption="10. Sobel Texture (Masked)")
+        c9.image(img_lesion_only, channels="BGR", caption="9. Masked Source")
+        c10.image(texture_vis, caption="10. Canny Edges (Masked)")
 
         # Histogram
         st.write("**11. Lesion Color Histogram**")
